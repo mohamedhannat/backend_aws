@@ -4,15 +4,33 @@ import json
 import base64
 import cv2
 from pathlib import Path
-from flask import Flask, Response, jsonify, request
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 import numpy as np
+from ultralytics import YOLO
+import random
+import shutil
 
 app = Flask(__name__)
 CORS(app)
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
+# Load YOLOv8 model (ensure the model path is correct)
+default_model = YOLO('yolov8n.pt')  # Replace 'yolov8n.pt' with your default model path
+
+# COCO class labels
+COCO_CLASSES = [
+    'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat', 'traffic light',
+    'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow',
+    'elephant', 'bear', 'zebra', 'giraffe', 'backpack', 'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee',
+    'skis', 'snowboard', 'sports ball', 'kite', 'baseball bat', 'baseball glove', 'skateboard', 'surfboard',
+    'tennis racket', 'bottle', 'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple',
+    'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch',
+    'potted plant', 'bed', 'dining table', 'toilet', 'TV', 'laptop', 'mouse', 'remote', 'keyboard', 'cell phone',
+    'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear',
+    'hair drier', 'toothbrush'
+]
 
 @app.route('/process_frame', methods=['POST'])
 def process_frame():
@@ -32,19 +50,30 @@ def process_frame():
         app.logger.error("Empty frame received")
         return jsonify(error="Empty frame"), 400
 
-    # Process the frame (dummy processing example)
-    detection_geometry = process_sift_frame(frame)
+    # Process the frame with YOLOv8
+    results = default_model(frame)
+    
+    # Extract person detections
+    detections = []
+    for result in results[0].boxes:
+        x1, y1, x2, y2 = result.xyxy[0]
+        confidence = result.conf[0]
+        cls = int(result.cls)
+        class_name = COCO_CLASSES[cls]
+        detections.append({
+            'x1': int(x1),
+            'y1': int(y1),
+            'x2': int(x2),
+            'y2': int(y2),
+            'confidence': float(confidence),
+            'class': class_name
+        })
 
-    return jsonify(success=bool(detection_geometry), detectionGeometry=detection_geometry) if detection_geometry else jsonify(success=False)
-
-def process_sift_frame(frame):
-    # Dummy processing logic
-    return {'x': 10, 'y': 10, 'width': 100, 'height': 100}
+    return jsonify(success=bool(detections), detections=detections) if detections else jsonify(success=False)
 
 @app.route('/save-annotations', methods=['POST'])
 def save_annotations():
     try:
-
         data = request.json
         logger.info(f"Starting Annotation with data: {data}")
 
@@ -55,7 +84,7 @@ def save_annotations():
         test_percent = data['testPercent']
         tags = data['tags']
 
-        base_dir = os.path.join(dataset_folder)
+        base_dir = os.path.join('/home/ubuntu/dev/realtime', dataset_folder)
         os.makedirs(os.path.join(base_dir, 'train', 'images'), exist_ok=True)
         os.makedirs(os.path.join(base_dir, 'train', 'labels'), exist_ok=True)
         os.makedirs(os.path.join(base_dir, 'valid', 'images'), exist_ok=True)
@@ -63,20 +92,16 @@ def save_annotations():
         os.makedirs(os.path.join(base_dir, 'test', 'images'), exist_ok=True)
         os.makedirs(os.path.join(base_dir, 'test', 'labels'), exist_ok=True)
 
-        train, val, test = [], [], []
+        # Shuffle annotations
+        random.shuffle(annotations)
 
-        for item in annotations:
-            label = item['label']
-            if label not in tags:
-                continue
+        # Calculate split indices
+        train_end = int(len(annotations) * (train_percent / 100))
+        val_end = train_end + int(len(annotations) * (val_percent / 100))
 
-            rand = os.urandom(1)[0] / 255.0
-            if rand < float(train_percent) / 100:
-                train.append(item)
-            elif rand < (float(train_percent) + float(val_percent)) / 100:
-                val.append(item)
-            else:
-                test.append(item)
+        train = annotations[:train_end]
+        val = annotations[train_end:val_end]
+        test = annotations[val_end:]
 
         def save_annotations(data, type):
             for anno in data:
@@ -126,6 +151,122 @@ def save_annotations():
         return jsonify(message='Annotations saved and training data prepared successfully.', data_yaml_path=data_yaml_path)
     except Exception as e:
         return jsonify(error=f'Failed to parse request data. {str(e)}'), 500
+
+@app.route('/start-training', methods=['GET'])
+def start_training():
+    dataset_folder = request.args.get('dataset_folder')
+    epochs = request.args.get('epochs', default=100, type=int)
+    batch_size = request.args.get('batch_size', default=16, type=int)
+    save_best_model_path = request.args.get('save_best_model_path')
+    dataset_path = os.path.join('/home/ubuntu/dev/realtime', dataset_folder)
+    data_yaml_path = os.path.join(dataset_path, 'data.yaml')
+    train_dir = os.path.join('/home/ubuntu/dev/realtime/runs/detect', 'train')
+
+    try:
+        if not os.path.exists(data_yaml_path):
+            raise FileNotFoundError(f"data.yaml not found at path: {data_yaml_path}")
+
+        # Remove existing 'train' directory if it exists
+        if os.path.exists(train_dir):
+            shutil.rmtree(train_dir)
+
+        model.train(data=data_yaml_path, epochs=epochs, batch=batch_size, imgsz=640, save_dir=train_dir)
+        
+        # Move best model to the specified path
+        best_model_path = os.path.join(train_dir, 'weights', 'best.pt')
+        if os.path.exists(best_model_path) and save_best_model_path:
+            os.makedirs(os.path.dirname(save_best_model_path), exist_ok=True)
+            os.rename(best_model_path, save_best_model_path)
+            return jsonify(message='Training completed successfully. Best model saved.', best_model_path=save_best_model_path)
+        else:
+            return jsonify(message='Training completed successfully. Best model not found.', best_model_path=best_model_path)
+
+    except Exception as e:
+        logger.error(f"Error starting training: {e}")
+        return jsonify(error=f"Error starting training: {str(e)}"), 500
+
+@app.route('/list-models', methods=['GET'])
+def list_models():
+    try:
+        models_path = Path('/home/ubuntu/dev/realtime/runs/detect')
+        models = [str(model_path) for model_path in models_path.glob('*/weights/best.pt')]
+        models.append('yolov8n.pt')  # Add the default COCO model
+        return jsonify(models=models)
+    except Exception as e:
+        logger.error(f"Error listing models: {e}")
+        return jsonify(error="Error listing models"), 500
+
+@app.route('/predict', methods=['POST'])
+def predict():
+    try:
+        model_path = request.form['model']
+        image_file = request.files['image']
+
+        # Load the model
+        model = YOLO(model_path)
+
+        # Load the class labels
+        if model_path == 'yolov8n.pt':
+            class_labels = COCO_CLASSES
+        else:
+            data_yaml_path = Path(model_path).parent.parent / 'data.yaml'
+            if data_yaml_path.exists():
+                with open(data_yaml_path, 'r') as f:
+                    data_yaml = yaml.safe_load(f)
+                    class_labels = data_yaml['names']
+            else:
+                class_labels = COCO_CLASSES  # Fallback to COCO classes
+
+        # Read image file
+        image_data = image_file.read()
+        nparr = np.frombuffer(image_data, np.uint8)
+        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+        # Process the frame with YOLOv8
+        results = model(frame)
+        
+        # Extract detections
+        detections = []
+        for result in results[0].boxes:
+            x1, y1, x2, y2 = result.xyxy[0]
+            confidence = result.conf[0]
+            cls = int(result.cls)
+            class_name = class_labels[cls]
+            detections.append({
+                'x1': int(x1),
+                'y1': int(y1),
+                'x2': int(x2),
+                'y2': int(y2),
+                'confidence': float(confidence),
+                'class': class_name
+            })
+
+        if not detections:
+            return jsonify(detections=[], message="No detections found.")
+
+        return jsonify(detections=detections)
+    except Exception as e:
+        logger.error(f"Error making prediction: {e}")
+        return jsonify(error="Error making prediction"), 500
+
+
+@app.route('/list-train-images', methods=['GET'])
+def list_train_images():
+    try:
+        train_images_path = Path('/home/ubuntu/dev/realtime/runs/detect/train')
+        images = [str(image_path.name) for image_path in train_images_path.glob('*.png')]
+        image_data = []
+        for image_name in images:
+            image_path = train_images_path / image_name
+            with open(image_path, "rb") as img_file:
+                image_base64 = base64.b64encode(img_file.read()).decode('utf-8')
+                image_data.append({
+                    "name": image_name,
+                    "data": image_base64
+                })
+        return jsonify(images=image_data)
+    except Exception as e:
+        logger.error(f"Error retrieving train images: {e}")
+        return jsonify(error="Error retrieving train images"), 500
 if __name__ == "__main__":
-    # threading.Thread(target=generate_frames, args=("runs/train/exp3/weights/best.pt", 0, (640, 640), 0.25, 0.45, 1000, "", None, False, 3, False, False, False, False)).start()
     app.run(host="0.0.0.0", port=5000)

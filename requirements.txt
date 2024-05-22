@@ -1,3 +1,4 @@
 flask
 flask_core
 opencv-python
+flask_cors
