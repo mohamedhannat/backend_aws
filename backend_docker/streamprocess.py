@@ -6,6 +6,7 @@ import time as tm
 from ultralytics import YOLO
 import json
 import os
+import numpy as np
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 
@@ -55,6 +56,8 @@ class StreamProcess:
     
     def yolo_processing(self, model_name):
         ov_model = YOLO("yolov8n_openvino_model/", task="detect")
+        #load yolo model
+        results = ov_model.predict(np.zeros((320, 320, 3)), imgsz=320)
 
         while(True):
             try: 

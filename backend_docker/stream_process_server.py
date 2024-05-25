@@ -74,14 +74,17 @@ async def stop_stream_process(request):
 
 async def check_signal():
     global streamprocess
+    signal_to_send = streamprocess.get_signals_to_send()
     while(True):
-        state = streamprocess.get_state()
-        if(state!=""):
+        try:
+            signal = await asyncio.get_event_loop().run_in_executor(None, signal_to_send.get)
             await sio.emit('recv_signal',  {
-                        'signal': state 
-                        }
-                    )
-        await asyncio.sleep(0.05)
+                            'signal': signal
+                            }
+                        )
+        except:
+            print("exception")
+            return
 
 async def start_background_tasks(application):
     application['signal']= asyncio.create_task(check_signal())
@@ -91,29 +94,27 @@ async def cleanup_background_tasks(application):
     application['signal'].cancel()
 
 
+
 if __name__ == "__main__":
-
-    try:
-        global streamprocess
-        t1= str(datetime.datetime.now())
-        from streamprocess import StreamProcess
-        t_start= tm.time()
-        streamprocess = StreamProcess()
-        streamprocess.run()
-        print("time needed to start streamprocess is:", tm.time()-t_start)
+    
+    global streamprocess
+    t1= str(datetime.datetime.now())
+    from streamprocess import StreamProcess
+    t_start= tm.time()
+    streamprocess = StreamProcess()
+    streamprocess.run()
+    print("time needed to start streamprocess is:", tm.time()-t_start)
+    
+    app.router.add_get("/state", state)       
+    app.router.add_get("/stop", stop_stream_process)
+    
+    app.on_startup.append(start_background_tasks)
+    app.on_cleanup.append(cleanup_background_tasks)
+    web.run_app(app, host='0.0.0.0', port=5000)        
+ 
         
-        app.router.add_get("/state", state)       
-        app.router.add_get("/stop", stop_stream_process)
-        
-        app.on_startup.append(start_background_tasks)
-        app.on_cleanup.append(cleanup_background_tasks)
-       
-        
-        web.run_app(app, host='0.0.0.0', port=5000)        
 
 
-    except KeyboardInterrupt:
-        pass
 
 
 
