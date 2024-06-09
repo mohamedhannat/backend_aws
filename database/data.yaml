@@ -1,6 +1,0 @@
-
-        train: /home/ubuntu/dev/realtime/database/train/images
-        val: /home/ubuntu/dev/realtime/database/valid/images
-        nc: 1
-        names: ["bottle"]
-        
